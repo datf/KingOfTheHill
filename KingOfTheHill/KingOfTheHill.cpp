@@ -13,7 +13,7 @@ void KingOfTheHill::onLoad()
 {
     _globalCvarManager = cvarManager;
     cvarManager->log("KingOfTheHill loaded!");
-    gameWrapper->HookEventWithCaller<ServerWrapper>("Function TAGame.GFxHUD_TA.HandleStatTickerMessage",
+    gameWrapper->HookEventWithCallerPost<ServerWrapper>("Function TAGame.GFxHUD_TA.HandleStatTickerMessage",
         [this](ServerWrapper caller, void* params, const std::string&) {
             if (!isGameServer()) { return; }
             statEvent(params);
@@ -21,7 +21,7 @@ void KingOfTheHill::onLoad()
     gameWrapper->HookEvent("Function TAGame.GameEvent_TA.EventPlayerAdded",
         [this](const std::string& name) {
             if (!isGameServer()) { return; }
-            cvarManager->log("Here comes a new challenger");
+            cvarManager->log("EventPlayerAdded");
             updateGamersQueue();
             updateGamersPlaying();
         });
@@ -36,7 +36,7 @@ void KingOfTheHill::onLoad()
 void KingOfTheHill::onUnload()
 {
     cvarManager->log("KingOfTheHill unloading...");
-    gameWrapper->UnhookEvent("Function TAGame.GFxHUD_TA.HandleStatTickerMessage");
+    gameWrapper->UnhookEventPost("Function TAGame.GFxHUD_TA.HandleStatTickerMessage");
     gameWrapper->UnhookEvent("Function TAGame.GameEvent_TA.EventPlayerAdded");
     gameWrapper->UnhookEvent("Function TAGame.GameEvent_Soccar_TA.EventMatchEnded");
 }
@@ -88,13 +88,16 @@ void KingOfTheHill::updateGamersQueue() {
     }
     auto cars = sw.GetCars();
     auto players = sw.GetPlayers();
+    auto localPlayers = sw.GetLocalPlayers();
+    auto PRIs = sw.GetPRIs();
 
-    _globalCvarManager->log("Updating gamers queue. Cars: " + std::to_string(cars.Count()) + ". players: " + std::to_string(players.Count()));
-    for (auto car : cars) {
-        auto pri = car.GetPRI();
-        if (pri.IsNull()) continue;
-        if (pri.GetbBot()) continue;
-        auto pid = pri.GetPlayerID();
+    _globalCvarManager->log("Updating queue. Cars: " + std::to_string(cars.Count()) + ". players: " + std::to_string(players.Count()) + ". Local: " + std::to_string(localPlayers.Count()) + ". PRIs: " + std::to_string(PRIs.Count()));
+    for (auto p : PRIs) {
+        if (p.IsNull() || p.GetbBot()) {
+            continue;
+        }
+        auto pid = p.GetPlayerID();
+        _globalCvarManager->log("Found player by PRI: " + std::to_string(pid));
         if (std::find(gamersQueue.begin(), gamersQueue.end(), pid) == gamersQueue.end()
             && std::find(gamersPlaying.begin(), gamersPlaying.end(), pid) == gamersPlaying.end()) {
             gamersQueue.push_back(pid);
@@ -109,9 +112,9 @@ void KingOfTheHill::updateGamersPlaying() {
         cvarManager->log("[updateGamersPlaying] null game server");
         return;
     }
-    auto cars = sw.GetCars();
+    auto players = sw.GetPlayers();
     auto teams = sw.GetTeams();
-    while (cars.Count() > 1 && gamersPlaying.size() < 2) {
+    while (players.Count() > 1 && gamersPlaying.size() < 2) {
         for (auto team : teams) {
             auto humans = team.GetMembers().Count() - team.GetNumBots();
             if (humans <= 0) {
@@ -165,6 +168,7 @@ void KingOfTheHill::statEvent(void* args) {
             }
             if (!pri.GetbBot() && gamersPlaying.size() >= 2) {
                 kickAndSwap(pri, scorerTeam);
+                break;
             }
         }
     }
@@ -186,26 +190,21 @@ void KingOfTheHill::statEvent(void* args) {
                 team.ResetScore();
             }
         }
-        for (CarWrapper car : sw.GetCars()) {
-            if (car.IsNull()) {
+        for (auto p : sw.GetPRIs()) {
+            if (p.IsNull()) {
                 continue;
             }
-            if (car.GetTeamNum2() != victimsTeam) {
+            if (p.GetTeamNum2() != victimsTeam) {
                 continue;
             }
-            auto pri = car.GetPRI();
-            if (pri.IsNull()) {
-                continue;
-            }
-            _globalCvarManager->log("player scored on: " + pri.GetPlayerName().ToString() + " " + (pri.GetbBot() ? "(bot) " : "") + "in the game with " + std::to_string(gamersPlaying.size()) + " players");
-            if (!pri.GetbBot() && gamersPlaying.size() >= 2) {
-                kickAndSwap(pri, victimsTeam);
+            _globalCvarManager->log("player scored on: " + p.GetPlayerName().ToString() + " " + (p.GetbBot() ? "(bot) " : "") + "in the game with " + std::to_string(gamersPlaying.size()) + " players");
+            if (!p.GetbBot() && gamersPlaying.size() >= 2) {
+                kickAndSwap(p, victimsTeam);
+                break;
             }
         }
     }
     break;
-    }
-    if (gameMode == GameMode::WINNER) {
     }
 }
 
@@ -225,16 +224,16 @@ void KingOfTheHill::kickAndSwap(PriWrapper playerToKick, int team) {
 
 void KingOfTheHill::faceNextPlayer(int team) {
     ServerWrapper sw = getGameServer();
-    auto cars = sw.GetCars();
+    auto PRIs = sw.GetPRIs();
     bool changed = false;
     int nextPlayer;
+    _globalCvarManager->log("[faceNextPlayer]   ");
     while (!changed && gamersQueue.size() > 0) {
         nextPlayer = gamersQueue.front();
-        for (auto c : cars) {
-            if (c.IsNull()) continue;
-            auto p = c.GetPRI();
-            if (p.IsNull()) continue;
+        for (auto p : PRIs) {
+            if (p.IsNull() || p.GetbBot()) continue;
             if (p.GetPlayerID() != nextPlayer) continue;
+            _globalCvarManager->log("Moving PID: " + std::to_string(p.GetPlayerID()) + " to team: " + std::to_string(team));
             p.ServerChangeTeam(team);
             changed = true;
         }
